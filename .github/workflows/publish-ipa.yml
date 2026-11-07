@@ -1,0 +1,42 @@
+name: Publish IPA to Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-ipa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact from build run 1
+        uses: actions/download-artifact@v4
+        with:
+          name: MNNChat-unsigned-ipa
+          run-id: 42328704361
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifact
+
+      - name: Locate IPA
+        run: |
+          find artifact -maxdepth 2 -type f -printf '%p %s bytes\n'
+          IPA=$(find artifact -type f -name '*.ipa' | head -n1)
+          if [ -z "$IPA" ]; then
+            unzip -o artifact/*.zip -d artifact/unpacked
+            IPA=$(find artifact/unpacked -type f -name '*.ipa' | head -n1)
+          fi
+          cp "$IPA" MNNChat.ipa
+          ls -lh MNNChat.ipa
+
+      - name: Create release with IPA
+        run: |
+          gh release delete v1.0 --yes --cleanup-tag || true
+          gh release create v1.0 MNNChat.ipa --title "MNNChat unsigned IPA" --notes "Generated from build #1"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
