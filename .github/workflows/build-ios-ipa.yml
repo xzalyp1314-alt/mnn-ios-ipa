@@ -1,0 +1,106 @@
+# ============================================================
+# 无 Mac 编译 MNN iOS 聊天 App（未签名 IPA）
+# 用法：放在一个【公开】GitHub 仓库的 .github/workflows/build-ios-ipa.yml
+#       push 后自动触发，或到 Actions 里手动 Run workflow
+# 产物：Artifacts -> MNNChat-unsigned-ipa -> MNNChat.ipa
+#       Windows 上用 Sideloadly + 免费 Apple ID 签名安装到 iPhone
+#
+# 关键设计：仓库本身只需要这一个文件，源码由 checkout 直接拉
+#          alibaba/MNN 的 master，因此【不需要 fork 几百 MB 的大仓库】
+# 编译参数、framework 路径、scheme 名均对齐官方 README：
+#   https://github.com/alibaba/MNN/blob/master/apps/iOS/MNNLLMChat/README.md
+# ============================================================
+
+name: Build MNN iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: 1. 拉取阿里官方 MNN 源码（master）
+        uses: actions/checkout@v4
+        with:
+          repository: alibaba/MNN
+          ref: master
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: 2. 选择 Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: 3. 安装编译依赖
+        run: brew install coreutils
+
+      - name: 4. 编译 iOS 版 MNN.framework（Metal + LLM，官方参数）
+        run: |
+          sh package_scripts/ios/buildiOS.sh "
+            -DMNN_ARM82=ON
+            -DMNN_LOW_MEMORY=ON
+            -DMNN_SUPPORT_TRANSFORMER_FUSE=ON
+            -DMNN_BUILD_LLM=ON
+            -DMNN_CPU_WEIGHT_DEQUANT_GEMM=ON
+            -DMNN_METAL=ON
+            -DMNN_BUILD_DIFFUSION=ON
+            -DMNN_OPENCL=OFF
+            -DMNN_SEP_BUILD=OFF
+            -DLLM_SUPPORT_AUDIO=ON
+            -DMNN_BUILD_AUDIO=ON
+            -DLLM_SUPPORT_VISION=ON
+            -DMNN_BUILD_OPENCV=ON
+            -DMNN_IMGCODECS=ON
+            -DMNN_BUILD_LLM_OMNI=ON
+          "
+
+      - name: 5. 把 framework 放进 iOS 工程
+        run: mv MNN-iOS-CPU-GPU/Static/MNN.framework apps/iOS/MNNLLMChat/
+
+      - name: 6. 编译 App（不签名，只产 .app）
+        run: |
+          cd apps/iOS/MNNLLMChat
+          xcodebuild build \
+            -project MNNLLMiOS.xcodeproj \
+            -scheme MNNLLMiOS \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS=arm64
+
+      - name: 7. 打包成未签名 IPA
+        run: |
+          cd apps/iOS/MNNLLMChat
+          APP=$(find build/Build/Products -type d -name "*.app" | head -n1)
+          if [ -z "$APP" ]; then
+            echo "!! 没找到 .app，打印产物目录便于排查"
+            find build -maxdepth 5 | head -80
+            exit 1
+          fi
+          echo "找到 app: $APP"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qr MNNChat.ipa Payload -x '*.DS_Store'
+          ls -lh MNNChat.ipa
+
+      - name: 8. 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MNNChat-unsigned-ipa
+          path: apps/iOS/MNNLLMChat/MNNChat.ipa
+          retention-days: 7
+          if-no-files-found: error
